@@ -196,7 +196,12 @@ async function GetMouse() {
     if (device) {
         return device;
     } else {
-        throw new Error('No Razer device found on system');
+        if (error.name === "NotFoundError") {
+            console.warn("No device selected or available. Retrying...");
+        } else {
+            console.error("Unexpected error in GetMouse:", error);
+        }
+        throw error;
     }
 };
 async function GetBattery() {
@@ -233,7 +238,12 @@ async function GetBattery() {
 
         return (reply.data.getUint8(9) / 255 * 100).toFixed(1);
     } catch (error) {
-        console.error(error);
+        if (error.message.includes("LIBUSB_ERROR_NO_DEVICE")) {
+            console.warn("Device disconnected during GetBattery. Retrying...");
+        } else {
+            console.error("Unexpected error in GetBattery:", error);
+        }
+        return undefined;
     }
 };
 
@@ -247,33 +257,72 @@ const matchDevicePath = (path, pid) => {
 }
 
 const monitorChargeState = () => {
-    const devices = HID.devices()
+    let device;
+    let retryInterval;
+    let retryDelay = 5000; // Initial retry delay (5 seconds)
+    const maxRetryDelay = 60000; // Max retry delay (1 minute)
 
-    let targetDeviceInfo = devices.find((device) => {
-        const pid = Object.keys(RazerProducts).find((pidKey) => {
-            const hexPid = `${parseInt(pidKey).toString(16).padStart(4, '0').toUpperCase()}`;
-            return matchDevicePath(device.path, hexPid.toString());
-        });
-        return !!pid;
-    });
+    const connectToDevice = () => {
+        try {
+            const devices = HID.devices();
+            const targetDeviceInfo = devices.find((device) => {
+                const pid = Object.keys(RazerProducts).find((pidKey) => {
+                    const hexPid = `${parseInt(pidKey).toString(16).padStart(4, "0").toUpperCase()}`;
+                    return matchDevicePath(device.path, hexPid.toString());
+                });
+                return !!pid;
+            });
 
-    if (!targetDeviceInfo) {
-        throw new Error('No Razer device found on system');
-    }
+            if (!targetDeviceInfo) {
+                console.log("No matching Razer device found. Retrying...");
+                throw new Error("Device not found");
+            }
 
-    const device = new HID.HID(targetDeviceInfo.path);
+            device = new HID.HID(targetDeviceInfo.path);
+            console.log("Connected to device:", targetDeviceInfo.product);
 
-    device.on("data", (data) => {
-        const chargingStateBit = data[2];
-        const newChargeState = chargingStateBit === 1;
+            // Reset retry delay on successful connection
+            retryDelay = 5000;
 
-        if (chargeState !== newChargeState) {
-            chargeState = newChargeState;
-            SetTrayDetails(tray, chargeState);
+            device.on("data", (data) => {
+                const chargingStateBit = data[2];
+                const newChargeState = chargingStateBit === 1;
+
+                if (chargeState !== newChargeState) {
+                    chargeState = newChargeState;
+                    SetTrayDetails(tray, chargeState);
+                }
+            });
+
+            device.on("error", (err) => {
+                if (err.message.includes("could not read from HID device")) {
+                    console.warn("Device disconnected. Retrying...");
+                } else {
+                    console.error("Unexpected HID device error:", err);
+                }
+                chargeState = false; // Reset charge state
+                SetTrayDetails(tray, chargeState);
+                retryConnection();
+            });
+        } catch (error) {
+            if (error.message === "Device not found") {
+                console.warn("Retrying device connection...");
+            } else {
+                console.error("Unexpected error during device connection:", error);
+            }
+            retryConnection();
         }
-    });
+    };
 
-    device.on("error", (err) => {
-        console.error("Device error:", err);
-    });
-}
+    const retryConnection = () => {
+        if (retryInterval) clearTimeout(retryInterval);
+
+        // Ensure retry delay does not exceed max limit
+        retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
+
+        console.log(`Retrying connection in ${retryDelay / 1000} seconds...`);
+        retryInterval = setTimeout(connectToDevice, retryDelay);
+    };
+
+    connectToDevice();
+};
