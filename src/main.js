@@ -8,12 +8,14 @@ const {
     nativeImage,
     Notification
 } = require('electron');
+const HID = require("node-hid");
 if (require('electron-squirrel-startup')) app.quit();
 
 const path = require('path');
 const rootPath = app.getAppPath();
 let tray;
 let batteryCheckInterval;
+let chargeState = false;
 
 app.whenReady().then(() => {
     const icon = nativeImage.createFromPath(path.join(rootPath, 'src/assets/battery_0.png'));
@@ -24,31 +26,33 @@ app.whenReady().then(() => {
     ]);
 
     batteryCheckInterval = setInterval(() => {
-        SetTrayDetails(tray);
+        SetTrayDetails(tray, chargeState);
     }, 30000);
 
-    SetTrayDetails(tray);
+    SetTrayDetails(tray, chargeState);
 
     tray.setContextMenu(contextMenu);
     tray.setToolTip('Searching for device');
     tray.setTitle('Razer battery life');
+
+    monitorChargeState()
 })
 
-function SetTrayDetails(tray) {
+function SetTrayDetails(tray, chargeState) {
     GetBattery().then(battLife => {
         if (battLife === 0 || battLife === undefined) return;
 
-        let assetPath = GetBatteryIconPath(battLife);
+        let assetPath = GetBatteryIconPath(battLife, chargeState);
 
         tray.setImage(nativeImage.createFromPath(path.join(rootPath, assetPath)));
         tray.setToolTip(battLife == 0 ? "Device disconnected" : battLife + '%');
     });
 }
 
-function GetBatteryIconPath(val) {
+function GetBatteryIconPath(val, isCharging) {
     let iconName;
     iconName = Math.floor(val/10) * 10;
-    return `src/assets/battery_${iconName}.png`;
+    return isCharging ? `src/assets/battery_charging.png` : `src/assets/battery_${iconName}.png`;
 }
 
 function QuitClick() {
@@ -119,15 +123,15 @@ const RazerProducts = {
         name: 'Razer Naga v2 Pro Wireless',
         transactionId: 0x1f
     },
-    0x00a5: {
+    0x00A5: {
         name: 'Razer Viper V2 Pro Wired',
         transactionId: 0x1f
     },
-    0x00a6: {
+    0x00A6: {
         name: 'Razer Viper V2 Pro Wireless',
         transactionId: 0x1f
     },
-    0x007b: {
+    0x007B: {
         name: 'Razer Viper Ultimate Wired',
         transactionId: 0x3f
     },
@@ -135,7 +139,7 @@ const RazerProducts = {
         name: 'Razer Viper Ultimate Wireless',
         transactionId: 0x3f
     },
-    0x007a: {
+    0x007A: {
         name: 'Razer Viper Ultimate Dongle',
         transactionId: 0x3f
     },
@@ -147,11 +151,11 @@ const RazerProducts = {
         name: 'Razer Blackshark V2 Pro RZ04-0322',
         transactionId: 0x3f
     },
-    0x00af: {
+    0x00AF: {
         name: 'Razer Cobra Pro Wired',
         transactionId: 0x1f
     },
-    0x00b0: {
+    0x00B0: {
         name: 'Razer Cobra Pro Wireless',
         transactionId: 0x1f
     },
@@ -232,3 +236,44 @@ async function GetBattery() {
         console.error(error);
     }
 };
+
+const matchDevicePath = (path, pid) => {
+    return (
+        path.includes(`VID_1532`) &&
+        path.includes(`PID_${pid}`) &&
+        path.includes("MI_01") &&
+        path.includes("Col05")
+    );
+}
+
+const monitorChargeState = () => {
+    const devices = HID.devices()
+
+    let targetDeviceInfo = devices.find((device) => {
+        const pid = Object.keys(RazerProducts).find((pidKey) => {
+            const hexPid = `0x${parseInt(pidKey).toString(16).padStart(4, '0').toUpperCase()}`;
+            return matchDevicePath(device.path, hexPid.toString().split('x')[1]);
+        });
+        return !!pid;
+    });
+
+    if (!targetDeviceInfo) {
+        throw new Error('No Razer device found on system');
+    }
+
+    const device = new HID.HID(targetDeviceInfo.path);
+
+    device.on("data", (data) => {
+        const chargingStateBit = data[2];
+        const newChargeState = chargingStateBit === 1;
+
+        if (chargeState !== newChargeState) {
+            chargeState = newChargeState;
+            SetTrayDetails(tray, chargeState);
+        }
+    });
+
+    device.on("error", (err) => {
+        console.error("Device error:", err);
+    });
+}
