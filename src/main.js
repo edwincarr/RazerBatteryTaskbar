@@ -251,8 +251,8 @@ const monitorChargeState = () => {
 
     let targetDeviceInfo = devices.find((device) => {
         const pid = Object.keys(RazerProducts).find((pidKey) => {
-            const hexPid = `0x${parseInt(pidKey).toString(16).padStart(4, '0').toUpperCase()}`;
-            return matchDevicePath(device.path, hexPid.toString().split('x')[1]);
+            const hexPid = `${parseInt(pidKey).toString(16).padStart(4, '0').toUpperCase()}`;
+            return matchDevicePath(device.path, hexPid.toString());
         });
         return !!pid;
     });
